@@ -4,11 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       ksu_version:
-        description: "KernelSU-Next version"
+        description: "KSU-Next version"
         required: true
         default: "v3.4.1"
       kmi:
-        description: "KMI version"
+        description: "KMI"
         required: true
         default: "android14-6.1"
 
@@ -17,67 +17,80 @@ permissions:
 
 jobs:
   build:
-    name: Patch init_boot
     runs-on: ubuntu-22.04
+    timeout-minutes: 45
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Verify stock init_boot
+      - name: Verify stock
         run: |
           ls -lh init_boot_stock.img
-          MD5=$(md5sum init_boot_stock.img | awk "{print \$1}")
-          echo "MD5: $MD5"
-          C=$(strings init_boot_stock.img | grep -cE "kernelsu|ksud|u:r:ksu" 2>/dev/null || true)
-          if [ -z "$C" ]; then C=0; fi
+          C=$(strings -a init_boot_stock.img 2>/dev/null | grep -E "kernelsu|ksud|u:r:ksu" 2>/dev/null | wc -l | tr -d '[:space:]')
+          [ -z "$C" ] && C=0
           echo "KSU refs: $C"
-          if [ "$C" -ge 3 ]; then echo "Input already patched"; exit 1; fi
+          if [ "$C" -ge 3 ]; then echo "Already patched"; exit 1; fi
 
-      - name: Download KernelSU-Next
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build ksud from source
         run: |
+          set -e
+          git clone --depth=1 https://github.com/KernelSU-Next/KernelSU-Next.git ksu-src
+          cd ksu-src/userspace/ksud
+          cargo build --release 2>&1 | tail -15
+          cp target/release/ksud "$GITHUB_WORKSPACE/ksud"
+          cd "$GITHUB_WORKSPACE"
+          chmod +x ksud
+          ./ksud --version || true
+
+      - name: Download LKM + APK
+        run: |
+          set -e
           KSU_VER="${{ inputs.ksu_version }}"
           KMI="${{ inputs.kmi }}"
-          curl -fL -o ksud "https://github.com/KernelSU-Next/KernelSU-Next/releases/download/${KSU_VER}/ksud-x86_64-unknown-linux-musl"
-          chmod +x ksud
-          curl -fL -o "kernelsu-lkm-${KMI}.ko" "https://github.com/KernelSU-Next/KernelSU-Next/releases/download/${KSU_VER}/aarch64_${KMI}_kernelsu.ko"
-          APK_NAME=$(curl -s "https://api.github.com/repos/KernelSU-Next/KernelSU-Next/releases/tags/${KSU_VER}" | grep -oE "\"name\": *\"KernelSU_Next_[^\"]*-release\.apk\"" | grep -v spoofed | head -1 | sed -E "s/.*\"(KernelSU_Next_[^\"]*)\"/\1/")
+          BASE="https://github.com/KernelSU-Next/KernelSU-Next/releases/download/${KSU_VER}"
+          curl -fL --retry 3 -o "kernelsu-lkm-${KMI}.ko" "${BASE}/aarch64_${KMI}_kernelsu.ko"
+          APK_NAME=$(curl -s "https://api.github.com/repos/KernelSU-Next/KernelSU-Next/releases/tags/${KSU_VER}" | python3 -c "import sys,json; d=json.load(sys.stdin); n=[a['name'] for a in d.get('assets',[]) if a['name'].endswith('-release.apk') and 'spoofed' not in a['name']]; print(n[0] if n else '')" 2>/dev/null || echo "")
           echo "APK: $APK_NAME"
-          curl -fL -o kernelsu-manager.apk "https://github.com/KernelSU-Next/KernelSU-Next/releases/download/${KSU_VER}/${APK_NAME}"
+          [ -n "$APK_NAME" ] || { echo "APK not found"; exit 1; }
+          curl -fL --retry 3 -o kernelsu-manager.apk "${BASE}/${APK_NAME}"
           ls -lh ksud kernelsu-lkm-*.ko kernelsu-manager.apk
 
       - name: Patch init_boot
         run: |
           KMI="${{ inputs.kmi }}"
+          cp init_boot_stock.img init_boot.img
+          STOCK_MD5=$(md5sum init_boot_stock.img | awk '{print $1}')
+          echo "Stock MD5: $STOCK_MD5"
           mkdir -p output
-          IN_MD5=$(md5sum init_boot_stock.img | awk "{print \$1}")
-          echo "Input MD5: $IN_MD5"
-          ./ksud boot-patch -b init_boot_stock.img -m "kernelsu-lkm-${KMI}.ko" --kmi "${KMI}" --partition init_boot -o output --out-name init_boot-patched.img
-          ls -lh output/init_boot-patched.img
-          OUT_MD5=$(md5sum output/init_boot-patched.img | awk "{print \$1}")
+          set +e
+          ./ksud boot-patch --boot init_boot.img --module "kernelsu-lkm-${KMI}.ko" --kmi "${KMI}" --partition init_boot -o output --out-name init_boot-patched.img 2>&1
+          echo "ksud exit: $?"
+          set -e
+          [ -f output/init_boot-patched.img ] || { echo "No output"; ls -la output/; exit 1; }
+          OUT_MD5=$(md5sum output/init_boot-patched.img | awk '{print $1}')
           echo "Output MD5: $OUT_MD5"
-          if [ "$IN_MD5" = "$OUT_MD5" ]; then echo "No-op patch"; exit 1; fi
+          [ "$OUT_MD5" = "$STOCK_MD5" ] && { echo "No-op"; exit 1; }
+          echo "OK: differs"
 
       - name: Verify output
         run: |
-          C=$(strings output/init_boot-patched.img | grep -cE "kernelsu|ksud|u:r:ksu" 2>/dev/null || true)
-          if [ -z "$C" ]; then C=0; fi
+          C=$(strings -a output/init_boot-patched.img 2>/dev/null | grep -E "kernelsu|ksud|u:r:ksu" 2>/dev/null | wc -l | tr -d '[:space:]')
+          [ -z "$C" ] && C=0
           echo "KSU refs: $C"
-          if [ "$C" -lt 3 ]; then echo "Patch failed"; exit 1; fi
+          [ "$C" -ge 3 ] || { echo "Patch failed"; exit 1; }
           sha256sum output/init_boot-patched.img init_boot_stock.img
 
-      - name: Prepare Release Files
+      - name: Prepare artifact
         run: |
           cp init_boot_stock.img output/
           cp kernelsu-manager.apk output/
           cp "kernelsu-lkm-${{ inputs.kmi }}.ko" output/
-          cd output
-          sha256sum init_boot-patched.img init_boot_stock.img kernelsu-manager.apk kernelsu-lkm-*.ko > SHA256SUMS
-          ls -lh
+          cd output && sha256sum * > SHA256SUMS && ls -lh
 
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: KernelSU-Lava-lxx521-${{ inputs.ksu_version }}
           path: output/
-          retention-days: 30
           if-no-files-found: error
