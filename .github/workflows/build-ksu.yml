@@ -37,7 +37,7 @@ jobs:
         run: |
           KSU_VER="${{ inputs.ksu_version }}"
           KMI="${{ inputs.kmi }}"
-          curl -fL -o ksud "https://github.com/KernelSU-Next/KernelSU-Next/releases/download/${KSU_VER}/ksud-aarch64-linux-android"
+          curl -fL -o ksud "https://github.com/KernelSU-Next/KernelSU-Next/releases/download/${KSU_VER}/ksud-x86_64-unknown-linux-musl"
           chmod +x ksud
           curl -fL -o "kernelsu-lkm-${KMI}.ko" "https://github.com/KernelSU-Next/KernelSU-Next/releases/download/${KSU_VER}/aarch64_${KMI}_kernelsu.ko"
           APK_NAME=$(curl -s "https://api.github.com/repos/KernelSU-Next/KernelSU-Next/releases/tags/${KSU_VER}" | grep -oE "\"name\": *\"KernelSU_Next_[^\"]*-release\.apk\"" | grep -v spoofed | head -1 | sed -E "s/.*\"(KernelSU_Next_[^\"]*)\"/\1/")
