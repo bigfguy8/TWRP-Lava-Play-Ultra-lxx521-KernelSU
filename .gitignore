@@ -6,3 +6,4 @@ tmp/
 *.backup
 .DS_Store
 Thumbs.db
+sources/
