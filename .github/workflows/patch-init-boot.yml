@@ -12,18 +12,21 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Verify stock init_boot.img
+      - name: Verify input is REAL stock (no KSU)
         run: |
-          echo "════════ VERIFY PASS 1 ════════"
           [ -f init_boot.img ] || { echo "❌ init_boot.img missing"; exit 1; }
           ls -lh init_boot.img
           SIZE=$(stat -c %s init_boot.img)
-          echo "Size: $SIZE"
-          [ "$SIZE" -gt 4000000 ] && [ "$SIZE" -lt 20000000 ] || { echo "❌ bad size"; exit 1; }
           MAGIC=$(head -c 8 init_boot.img | tr -d '\0')
-          echo "Magic: $MAGIC"
-          [[ "$MAGIC" == ANDROID!* ]] || { echo "❌ not Android boot image"; exit 1; }
-          echo "MD5: $(md5sum init_boot.img | awk '{print $1}')"
+          PRE=$(strings init_boot.img | grep -icE "kernelsu|ksud|u:r:ksu" || echo 0)
+          echo "Size: $SIZE | Magic: $MAGIC | KSU refs: $PRE"
+          [ "$SIZE" -gt 4000000 ] && [ "$SIZE" -lt 20000000 ] || { echo "❌ bad size"; exit 1; }
+          [[ "$MAGIC" == ANDROID!* ]] || { echo "❌ not Android boot"; exit 1; }
+          if [ "$PRE" -ge 3 ]; then
+            echo "❌ Input already contains KernelSU. Upload REAL stock."
+            exit 1
+          fi
+          echo "Input MD5: $(md5sum init_boot.img | awk '{print $1}')"
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -31,55 +34,50 @@ jobs:
       - name: Install deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            build-essential cmake pkg-config libssl-dev \
-            zlib1g-dev liblz4-dev cpio file
+          sudo apt-get install -y build-essential cmake pkg-config libssl-dev zlib1g-dev liblz4-dev cpio file
 
       - name: Clone KernelSU Next
         run: |
           git clone --depth=1 https://github.com/KernelSU-Next/KernelSU-Next.git ksu
           cd ksu && echo "Commit: $(git rev-parse HEAD)"
-          ls userspace/ksud/ || { echo "❌ ksud dir missing"; exit 1; }
 
       - name: Build ksud
         run: |
           cd ksu/userspace/ksud
           cargo build --release 2>&1 | tail -30
           ls -la target/release/ksud
-          file target/release/ksud
-
-      - name: Show ksud help
-        run: |
-          KSUD=./ksu/userspace/ksud/target/release/ksud
-          $KSUD --help 2>&1 || true
-          echo "---"
-          $KSUD boot-patch --help 2>&1 || true
 
       - name: Patch init_boot.img
         run: |
           KSUD=./ksu/userspace/ksud/target/release/ksud
+          IN_MD5=$(md5sum init_boot.img | awk '{print $1}')
+          echo "Input  MD5: $IN_MD5"
+
           cp init_boot.img init_boot_patched.img
           chmod +w init_boot_patched.img
           set +e
-          echo "--- Attempt 1: -b ---"
-          $KSUD boot-patch -b init_boot_patched.img && RC=0 || RC=$?
-          [ $RC -eq 0 ] || {
-            echo "--- Attempt 2: positional ---"
-            $KSUD boot-patch init_boot_patched.img && RC=0 || RC=$?
-          }
-          [ $RC -eq 0 ] || {
-            echo "--- Attempt 3: --boot-image ---"
-            $KSUD boot-patch --boot-image init_boot_patched.img && RC=0 || RC=$?
-          }
+          $KSUD boot-patch -b init_boot_patched.img 2>&1 || \
+          $KSUD boot-patch init_boot_patched.img 2>&1 || \
+          $KSUD boot-patch --boot-image init_boot_patched.img 2>&1
+          RC=$?
           set -e
-          ls -lh init_boot.img init_boot_patched.img
+          echo "ksud exit: $RC"
 
-      - name: Verify output
+          OUT_MD5=$(md5sum init_boot_patched.img | awk '{print $1}')
+          echo "Output MD5: $OUT_MD5"
+
+          if [ "$IN_MD5" = "$OUT_MD5" ]; then
+            echo "❌ BUG: output == input — patch was no-op"
+            exit 1
+          fi
+          echo "✅ Output differs from input"
+
+      - name: Verify output has KernelSU
         run: |
           KSU_COUNT=$(strings init_boot_patched.img | grep -icE "kernelsu|ksud|u:r:ksu" || echo 0)
-          echo "KernelSU references: $KSU_COUNT"
+          echo "KSU refs after patch: $KSU_COUNT"
+          [ "$KSU_COUNT" -ge 3 ] || { echo "❌ patch failed"; exit 1; }
           strings init_boot_patched.img | grep -iE "kernelsu|ksud" | head -10
-          [ "$KSU_COUNT" -ge 1 ] || { echo "❌ patch failed"; exit 1; }
           md5sum init_boot.img init_boot_patched.img
 
       - name: Upload artifact
@@ -88,4 +86,3 @@ jobs:
           name: init_boot-patched-kernelsu
           path: init_boot_patched.img
           if-no-files-found: error
-
