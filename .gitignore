@@ -1,0 +1,8 @@
+output/
+build/
+tmp/
+*.tmp
+*.bak
+*.backup
+.DS_Store
+Thumbs.db

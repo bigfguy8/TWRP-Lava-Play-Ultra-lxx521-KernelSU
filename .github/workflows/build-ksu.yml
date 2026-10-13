@@ -1,0 +1,136 @@
+name: Build KernelSU-Next init_boot
+
+on:
+  workflow_dispatch:
+    inputs:
+      ksu_version:
+        description: 'KernelSU-Next version (e.g., v3.4.1)'
+        required: true
+        default: 'v3.4.1'
+      kmi:
+        description: 'KMI version'
+        required: true
+        default: 'android14-6.1'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Patch init_boot with KernelSU-Next
+    runs-on: ubuntu-22.04
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+      
+      - name: Download KernelSU-Next
+        run: |
+          echo "=== Downloading KernelSU-Next ${{ inputs.ksu_version }} ==="
+          KSU_VER="${{ inputs.ksu_version }}"
+          KMI="${{ inputs.kmi }}"
+          
+          # Download ksud (aarch64-linux-android)
+          curl -L -o ksud "https://github.com/KernelSU-Next/KernelSU-Next/releases/download/${KSU_VER}/ksud-aarch64-linux-android"
+          chmod +x ksud
+          
+          # Download LKM
+          curl -L -o "kernelsu-lkm-${KMI}.ko" "https://github.com/KernelSU-Next/KernelSU-Next/releases/download/${KSU_VER}/aarch64_${KMI}_kernelsu.ko"
+          
+          # Download Manager APK (regular, not spoofed)
+          KSU_NUM=$(echo "$KSU_VER" | tr -d 'v.' | cut -c1-5)
+          curl -L -o "kernelsu-manager.apk" "https://github.com/KernelSU-Next/KernelSU-Next/releases/download/${KSU_VER}/KernelSU_Next_${KSU_VER}_${KSU_NUM}-release.apk" || \
+            curl -L -o "kernelsu-manager.apk" "https://github.com/KernelSU-Next/KernelSU-Next/releases/download/${KSU_VER}/KernelSU_Next_${KSU_VER}-release.apk"
+          
+          echo ""
+          echo "=== Downloaded files ==="
+          ls -lh ksud kernelsu-lkm-*.ko kernelsu-manager.apk
+      
+      - name: Verify Stock init_boot
+        run: |
+          echo "=== Verify stock init_boot.img ==="
+          ls -lh init_boot_stock.img
+          xxd init_boot_stock.img | head -1
+          
+          echo ""
+          echo "=== Verify SHA ==="
+          sha256sum init_boot_stock.img
+      
+      - name: Patch init_boot
+        run: |
+          KMI="${{ inputs.kmi }}"
+          
+          echo "=== Patching init_boot with KernelSU-Next ==="
+          mkdir -p output
+          
+          ./ksud boot-patch \
+            -b init_boot_stock.img \
+            -m "kernelsu-lkm-${KMI}.ko" \
+            --kmi "${KMI}" \
+            -o output \
+            --out-name init_boot-patched.img
+          
+          echo ""
+          echo "=== Verify output ==="
+          ls -lh output/init_boot-patched.img
+          xxd output/init_boot-patched.img | head -1
+          sha256sum output/init_boot-patched.img
+      
+      - name: Prepare Release Files
+        run: |
+          cp init_boot_stock.img output/
+          cp kernelsu-manager.apk output/
+          cp "kernelsu-lkm-${{ inputs.kmi }}.ko" output/
+          
+          cd output
+          sha256sum init_boot-patched.img init_boot_stock.img kernelsu-manager.apk kernelsu-lkm-*.ko > SHA256SUMS
+          cat SHA256SUMS
+          
+          ls -lh
+      
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: KernelSU-Lava-lxx521-${{ inputs.ksu_version }}
+          path: output/
+          retention-days: 30
+          if-no-files-found: error
+      
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ksu-${{ inputs.ksu_version }}-${{ github.run_number }}
+          name: "KernelSU-Next ${{ inputs.ksu_version }} for Lava Play Ultra 5G"
+          body: |
+            ## KernelSU-Next ${{ inputs.ksu_version }}
+            
+            Patched init_boot for **Lava Play Ultra 5G** (lxx521 / MT6878).
+            
+            **KMI:** ${{ inputs.kmi }}
+            **KSU version:** ${{ inputs.ksu_version }}
+            **Build run:** ${{ github.run_id }}
+            
+            ### Files
+            - `init_boot-patched.img` — flash this
+            - `init_boot_stock.img` — stock recovery
+            - `kernelsu-manager.apk` — Manager app
+            - `SHA256SUMS` — hashes
+            
+            ### Install
+            ```
+            mtk w init_boot_a init_boot-patched.img
+            mtk reset
+            ```
+            Then: `adb install kernelsu-manager.apk`
+            
+            ### Warning
+            - Advanced users only
+            - Backup stock init_boot first
+            - Test at your own risk
+          files: |
+            output/init_boot-patched.img
+            output/init_boot_stock.img
+            output/kernelsu-manager.apk
+            output/SHA256SUMS
+          draft: false
+          prerelease: false
