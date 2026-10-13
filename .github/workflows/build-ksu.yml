@@ -18,7 +18,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 45
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -30,34 +30,34 @@ jobs:
           echo "KSU refs: $C"
           if [ "$C" -ge 3 ]; then echo "Already patched"; exit 1; fi
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Build ksud from source
+      - name: Install QEMU
         run: |
-          set -e
-          git clone --depth=1 https://github.com/KernelSU-Next/KernelSU-Next.git ksu-src
-          cd ksu-src/userspace/ksud
-          cargo build --release 2>&1 | tail -15
-          cp target/release/ksud "$GITHUB_WORKSPACE/ksud"
-          cd "$GITHUB_WORKSPACE"
-          chmod +x ksud
-          ./ksud --version || true
+          sudo apt-get update
+          sudo apt-get install -y qemu-user-static binfmt-support
+          sudo update-binfmts --enable qemu-aarch64 || true
 
-      - name: Download LKM + APK
+      - name: Download ksud (aarch64-android) + LKM + APK
         run: |
           set -e
           KSU_VER="${{ inputs.ksu_version }}"
           KMI="${{ inputs.kmi }}"
           BASE="https://github.com/KernelSU-Next/KernelSU-Next/releases/download/${KSU_VER}"
+
+          curl -fL --retry 3 -o ksud-aarch64 "${BASE}/ksud-aarch64-linux-android"
+          chmod +x ksud-aarch64
+          file ksud-aarch64
+          echo ">>> Testing QEMU..."
+          qemu-aarch64-static ./ksud-aarch64 --version 2>&1 | head -5 || true
+          echo ">>> boot-patch help:"
+          qemu-aarch64-static ./ksud-aarch64 boot-patch --help 2>&1 | head -40 || true
+
           curl -fL --retry 3 -o "kernelsu-lkm-${KMI}.ko" "${BASE}/aarch64_${KMI}_kernelsu.ko"
           APK_NAME=$(curl -s "https://api.github.com/repos/KernelSU-Next/KernelSU-Next/releases/tags/${KSU_VER}" | python3 -c "import sys,json; d=json.load(sys.stdin); n=[a['name'] for a in d.get('assets',[]) if a['name'].endswith('-release.apk') and 'spoofed' not in a['name']]; print(n[0] if n else '')" 2>/dev/null || echo "")
-          echo "APK: $APK_NAME"
           [ -n "$APK_NAME" ] || { echo "APK not found"; exit 1; }
           curl -fL --retry 3 -o kernelsu-manager.apk "${BASE}/${APK_NAME}"
-          ls -lh ksud kernelsu-lkm-*.ko kernelsu-manager.apk
+          ls -lh
 
-      - name: Patch init_boot
+      - name: Patch init_boot via QEMU
         run: |
           KMI="${{ inputs.kmi }}"
           cp init_boot_stock.img init_boot.img
@@ -65,21 +65,28 @@ jobs:
           echo "Stock MD5: $STOCK_MD5"
           mkdir -p output
           set +e
-          ./ksud boot-patch --boot init_boot.img --module "kernelsu-lkm-${KMI}.ko" --kmi "${KMI}" --partition init_boot -o output --out-name init_boot-patched.img 2>&1
-          echo "ksud exit: $?"
+          qemu-aarch64-static ./ksud-aarch64 boot-patch \
+            --boot init_boot.img \
+            --module "kernelsu-lkm-${KMI}.ko" \
+            --kmi "${KMI}" \
+            --partition init_boot \
+            -o output \
+            --out-name init_boot-patched.img 2>&1
+          echo "exit: $?"
           set -e
-          [ -f output/init_boot-patched.img ] || { echo "No output"; ls -la output/; exit 1; }
+          echo ">>> Output dir:"; ls -lh output/
+          [ -f output/init_boot-patched.img ] || { echo "No output"; find . -name "*.img" -newer init_boot_stock.img; exit 1; }
           OUT_MD5=$(md5sum output/init_boot-patched.img | awk '{print $1}')
           echo "Output MD5: $OUT_MD5"
           [ "$OUT_MD5" = "$STOCK_MD5" ] && { echo "No-op"; exit 1; }
           echo "OK: differs"
 
-      - name: Verify output
+      - name: Verify
         run: |
           C=$(strings -a output/init_boot-patched.img 2>/dev/null | grep -E "kernelsu|ksud|u:r:ksu" 2>/dev/null | wc -l | tr -d '[:space:]')
           [ -z "$C" ] && C=0
           echo "KSU refs: $C"
-          [ "$C" -ge 3 ] || { echo "Patch failed"; exit 1; }
+          [ "$C" -ge 3 ] || { echo "Failed (refs=$C)"; exit 1; }
           sha256sum output/init_boot-patched.img init_boot_stock.img
 
       - name: Prepare artifact
