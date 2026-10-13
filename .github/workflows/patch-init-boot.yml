@@ -1,0 +1,91 @@
+name: Patch init_boot.img with KernelSU Next
+
+on:
+  workflow_dispatch:
+
+jobs:
+  patch:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify stock init_boot.img
+        run: |
+          echo "════════ VERIFY PASS 1 ════════"
+          [ -f init_boot.img ] || { echo "❌ init_boot.img missing"; exit 1; }
+          ls -lh init_boot.img
+          SIZE=$(stat -c %s init_boot.img)
+          echo "Size: $SIZE"
+          [ "$SIZE" -gt 4000000 ] && [ "$SIZE" -lt 20000000 ] || { echo "❌ bad size"; exit 1; }
+          MAGIC=$(head -c 8 init_boot.img | tr -d '\0')
+          echo "Magic: $MAGIC"
+          [[ "$MAGIC" == ANDROID!* ]] || { echo "❌ not Android boot image"; exit 1; }
+          echo "MD5: $(md5sum init_boot.img | awk '{print $1}')"
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake pkg-config libssl-dev \
+            zlib1g-dev liblz4-dev cpio file
+
+      - name: Clone KernelSU Next
+        run: |
+          git clone --depth=1 https://github.com/KernelSU-Next/KernelSU-Next.git ksu
+          cd ksu && echo "Commit: $(git rev-parse HEAD)"
+          ls userspace/ksud/ || { echo "❌ ksud dir missing"; exit 1; }
+
+      - name: Build ksud
+        run: |
+          cd ksu/userspace/ksud
+          cargo build --release 2>&1 | tail -30
+          ls -la target/release/ksud
+          file target/release/ksud
+
+      - name: Show ksud help
+        run: |
+          KSUD=./ksu/userspace/ksud/target/release/ksud
+          $KSUD --help 2>&1 || true
+          echo "---"
+          $KSUD boot-patch --help 2>&1 || true
+
+      - name: Patch init_boot.img
+        run: |
+          KSUD=./ksu/userspace/ksud/target/release/ksud
+          cp init_boot.img init_boot_patched.img
+          chmod +w init_boot_patched.img
+          set +e
+          echo "--- Attempt 1: -b ---"
+          $KSUD boot-patch -b init_boot_patched.img && RC=0 || RC=$?
+          [ $RC -eq 0 ] || {
+            echo "--- Attempt 2: positional ---"
+            $KSUD boot-patch init_boot_patched.img && RC=0 || RC=$?
+          }
+          [ $RC -eq 0 ] || {
+            echo "--- Attempt 3: --boot-image ---"
+            $KSUD boot-patch --boot-image init_boot_patched.img && RC=0 || RC=$?
+          }
+          set -e
+          ls -lh init_boot.img init_boot_patched.img
+
+      - name: Verify output
+        run: |
+          KSU_COUNT=$(strings init_boot_patched.img | grep -icE "kernelsu|ksud|u:r:ksu" || echo 0)
+          echo "KernelSU references: $KSU_COUNT"
+          strings init_boot_patched.img | grep -iE "kernelsu|ksud" | head -10
+          [ "$KSU_COUNT" -ge 1 ] || { echo "❌ patch failed"; exit 1; }
+          md5sum init_boot.img init_boot_patched.img
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: init_boot-patched-kernelsu
+          path: init_boot_patched.img
+          if-no-files-found: error
+
