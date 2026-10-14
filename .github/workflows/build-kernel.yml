@@ -1,12 +1,7 @@
-name: Build Kernel MT6878
+name: Build Kernel MT6878 (GKI + stock config)
 
 on:
   workflow_dispatch:
-    inputs:
-      kernel_source:
-        default: "NothingOSS/android_kernel_6.1_nothing_mt6878"
-      kernel_branch:
-        default: "mt6878/Tetris/v"
 
 permissions:
   contents: write
@@ -20,8 +15,9 @@ jobs:
 
       - name: Setup
         run: |
+          set +e
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
-                      /opt/hostedtoolcache/CodeQL /usr/local/share/boost || true
+                      /opt/hostedtoolcache/CodeQL /usr/local/share/boost
           sudo apt-get update -qq
           sudo apt-get install -y -qq \
             bc bison build-essential ccache curl flex git git-lfs \
@@ -30,49 +26,79 @@ jobs:
             cpio xz-utils device-tree-compiler \
             gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
             gcc-arm-linux-gnueabi libc6-dev-arm64-cross libc6-dev-armhf-cross
-          echo "GCC: $(aarch64-linux-gnu-gcc --version | head -1)"
+          aarch64-linux-gnu-gcc --version | head -1
 
       - name: Clang 17
         run: |
+          set +e
           sudo mkdir -p /opt/tc/clang-17 && cd /opt/tc/clang-17
           sudo curl -fsSL --retry 3 -o c.tgz \
             "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-14.0.0_r74/clang-r487747c.tar.gz"
           sudo tar xzf c.tgz && sudo rm c.tgz
           /opt/tc/clang-17/bin/clang --version | head -1
 
-      - name: Clone + list configs
+      - name: Clone Google Android Common Kernel
         run: |
-          R="${{ inputs.kernel_source }}"
-          B="${{ inputs.kernel_branch }}"
-          git clone --depth=1 --branch "$B" "https://github.com/$R.git" ksrc
+          set +e
+          # Clone android14-6.1 (matches stock kernel 6.1.115)
+          git clone --depth=1 --branch android14-6.1 \
+            https://android.googlesource.com/kernel/common ksrc
+          if [ ! -d ksrc ]; then
+            echo "::error::Clone failed"
+            exit 1
+          fi
           cd ksrc
-          echo "=== Top-level (first 10) ==="; ls -1 | head -10
+          echo "HEAD: $(git log -1 --oneline)"
+          echo "Makefile version:"
+          head -5 Makefile
           echo ""
-          echo "=== build/build.sh ==="; [ -f build/build.sh ] && echo YES || echo NO
-          echo ""
-          echo "=== All defconfigs ==="
-          ls -la arch/arm64/configs/*defconfig 2>/dev/null
-          echo ""
-          echo "=== arch/arm64/boot/dts dirs ==="
-          ls arch/arm64/boot/dts/ 2>/dev/null | head -20
-          echo ""
-          echo "=== Search for mt6878 dts ==="
-          find arch/arm64/boot/dts -iname "*mt6878*" -o -iname "*k6878*" 2>/dev/null | head -10
-          echo ""
-          echo "=== Drivers for mediatek ==="
-          ls drivers/ 2>/dev/null | grep -i mediatek
+          echo "=== Stock config check ==="
+          ls -la ../kernel-config/lxx521_defconfig
 
-      - name: KSU manual integration
+      - name: Prepare defconfig (disable MODVERSIONS, MODULE_SIG for KSU)
+        run: |
+          set +e
+          cd ksrc
+          mkdir -p arch/arm64/configs
+          cp ../kernel-config/lxx521_defconfig arch/arm64/configs/lxx521_defconfig
+
+          echo "=== Modifying config for KSU ==="
+          # Disable MODVERSIONS and MODULE_SIG (KSU requires)
+          sed -i 's/^CONFIG_MODVERSIONS=y/# CONFIG_MODVERSIONS is not set/' arch/arm64/configs/lxx521_defconfig
+          sed -i 's/^CONFIG_MODULE_SIG=y/# CONFIG_MODULE_SIG is not set/' arch/arm64/configs/lxx521_defconfig
+          sed -i 's/^CONFIG_MODULE_SIG_ALL=y/# CONFIG_MODULE_SIG_ALL is not set/' arch/arm64/configs/lxx521_defconfig
+          sed -i 's/^CONFIG_MODULE_SIG_FORCE=y/# CONFIG_MODULE_SIG_FORCE is not set/' arch/arm64/configs/lxx521_defconfig
+          sed -i 's/^CONFIG_MODULE_SIG_PROTECT=y/# CONFIG_MODULE_SIG_PROTECT is not set/' arch/arm64/configs/lxx521_defconfig
+
+          echo "After modification:"
+          grep -E "^CONFIG_MODVERSIONS|^CONFIG_MODULE_SIG" arch/arm64/configs/lxx521_defconfig || echo "All disabled ✅"
+
+      - name: Integrate KernelSU
         working-directory: ksrc
         run: |
-          git clone --depth=1 https://github.com/KernelSU-Next/KernelSU-Next.git KernelSU 2>&1 | tail -2
-          [ -d KernelSU ] || { echo "::error::KSU clone failed"; exit 1; }
+          set +e
+          # Use KernelSU-Next for Android 14-6.1
+          git clone --depth=1 https://github.com/KernelSU-Next/KernelSU-Next.git KernelSU
+          if [ ! -d KernelSU ]; then
+            echo "::error::KSU clone failed"
+            exit 1
+          fi
+
+          # Auto-integrate using setup.sh
+          if [ -f KernelSU/kernel/setup.sh ]; then
+            echo "=== Running official setup.sh ==="
+            bash KernelSU/kernel/setup.sh
+          fi
+
+          # Manual fallback
           grep -q 'KernelSU/Kconfig' Kconfig || echo 'source "KernelSU/Kconfig"' >> Kconfig
           grep -q 'CONFIG_KSU' Makefile || echo 'obj-$(CONFIG_KSU) += KernelSU/' >> Makefile
-          echo "✅ Kconfig: $(grep -c KernelSU Kconfig) lines"
-          echo "✅ Makefile: $(grep -c KernelSU Makefile) lines"
 
-      - name: Build Image
+          echo "KSU verify:"
+          grep KernelSU Kconfig | head -2
+          grep CONFIG_KSU Makefile | head -2
+
+      - name: Build Kernel
         working-directory: ksrc
         run: |
           set +e
@@ -86,61 +112,50 @@ jobs:
           export OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump
           export READELF=llvm-readelf STRIP=llvm-strip
 
-          # ── Pick defconfig: proper for loop ──
-          DEFCONFIG=""
-          for cand in gki_defconfig defconfig; do
-            if [ -f "arch/arm64/configs/$cand" ]; then
-              DEFCONFIG="$cand"
-              break
-            fi
-          done
+          rm -rf out
+          mkdir -p out
 
-          if [ -z "$DEFCONFIG" ]; then
-            echo "::error::No suitable defconfig found"
-            ls arch/arm64/configs/ | head -20
+          echo "════════ make lxx521_defconfig ════════"
+          make O=out ARCH=arm64 CC=clang HOSTCC=gcc CROSS_COMPILE=aarch64-linux-gnu- lxx521_defconfig 2>&1 | tail -10
+          if [ ! -f out/.config ]; then
+            echo "::error::defconfig failed"
             exit 1
           fi
-
-          echo "════════ USING: $DEFCONFIG ════════"
-          rm -rf out && mkdir -p out
+          echo ".config: $(stat -c %s out/.config) bytes"
 
           echo ""
-          echo "════════ make defconfig ════════"
-          make O=out ARCH=arm64 CC=clang HOSTCC=gcc CROSS_COMPILE=aarch64-linux-gnu- "$DEFCONFIG" 2>&1 | tail -15
-
-          [ -f out/.config ] || { echo "::error::No .config"; exit 1; }
-          echo "Config: $(stat -c %s out/.config) bytes"
-
-          echo ""
-          echo "════════ Enable KSU + required ════════"
+          echo "════════ Enable KSU in config ════════"
           ./scripts/config --file out/.config \
             -e CONFIG_KSU -e CONFIG_KALLSYMS -e CONFIG_KALLSYMS_ALL \
-            -e CONFIG_MODULES -d CONFIG_MODULE_SIG -d CONFIG_MODULE_SIG_ALL \
-            -d CONFIG_MODVERSIONS 2>&1 | tail -3
+            -e CONFIG_MODULES \
+            -d CONFIG_MODVERSIONS \
+            -d CONFIG_MODULE_SIG -d CONFIG_MODULE_SIG_ALL -d CONFIG_MODULE_SIG_FORCE \
+            -d CONFIG_MODULE_SIG_PROTECT
 
-          make O=out ARCH=arm64 CC=clang HOSTCC=gcc CROSS_COMPILE=aarch64-linux-gnu- olddefconfig 2>&1 | tail -3
-
-          echo "CONFIG_KSU: $(grep '^CONFIG_KSU=' out/.config || echo NOT_SET)"
+          make O=out ARCH=arm64 CC=clang HOSTCC=gcc CROSS_COMPILE=aarch64-linux-gnu- olddefconfig 2>&1 | tail -5
 
           echo ""
-          echo "════════ make Image (-j$(nproc)) ════════"
+          echo "=== Final KSU symbols ==="
+          grep -E "^CONFIG_(KSU|MODVERSIONS|MODULE_SIG|KALLSYMS|MODULES)=" out/.config
+
+          echo ""
+          echo "════════ make Image (-j4) ════════"
           make O=out ARCH=arm64 CC=clang HOSTCC=gcc CROSS_COMPILE=aarch64-linux-gnu- \
-            -j"$(nproc)" Image 2>&1 | tail -100
+            -j4 Image 2>&1 | tail -80
 
           echo ""
-          echo "════════ VERIFY ════════"
+          echo "════════ Verify ════════"
           if [ ! -f out/arch/arm64/boot/Image ]; then
-            echo "❌ No Image produced"
-            find out -name "Image*" -type f 2>/dev/null | head
+            echo "::error::No Image"
+            find out -name "Image*" -type f | head
             exit 1
           fi
-
           SZ=$(stat -c %s out/arch/arm64/boot/Image)
-          echo "Image size: $SZ bytes"
-          [ "$SZ" -gt 500000 ] || { echo "❌ Too small"; exit 1; }
-
-          echo "Kernel: $(strings out/arch/arm64/boot/Image | grep 'Linux version 6' | head -1)"
+          echo "Image: $SZ bytes"
+          [ "$SZ" -gt 500000 ] || { echo "::error::Too small"; exit 1; }
+          echo "Kernel version: $(strings out/arch/arm64/boot/Image | grep 'Linux version 6' | head -1)"
           echo "KSU refs: $(strings out/arch/arm64/boot/Image | grep -icE 'kernelsu|ksu_')"
+          echo "vermagic: $(strings out/arch/arm64/boot/Image | grep -E '^6\.1\.' | head -1)"
           echo "✅ BUILD SUCCEEDED"
 
       - name: Collect
@@ -152,7 +167,8 @@ jobs:
           cp -v out/arch/arm64/boot/Image.gz ../kout/ 2>/dev/null
           cp -v out/vmlinux ../kout/ 2>/dev/null
           cp -v out/System.map ../kout/ 2>/dev/null
-          find out -name "*.ko" 2>/dev/null | head -100 | while read f; do cp "$f" ../kout/ 2>/dev/null; done
+          cp -v out/.config ../kout/config-final
+          find out -name "*.ko" 2>/dev/null | head -50 | while read f; do cp "$f" ../kout/ 2>/dev/null; done
           ls -lh ../kout/
 
       - uses: actions/upload-artifact@v4
