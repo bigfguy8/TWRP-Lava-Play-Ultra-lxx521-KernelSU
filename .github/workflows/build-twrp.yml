@@ -12,13 +12,10 @@ jobs:
     timeout-minutes: 360
     steps:
       - uses: actions/checkout@v4
-        with:
-          lfs: true
 
       - name: Maximize disk
         run: |
           set +e
-          df -h /
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
                       /opt/hostedtoolcache/CodeQL /usr/local/share/boost \
                       /usr/local/lib/node_modules /usr/share/swift /opt/az \
@@ -26,8 +23,7 @@ jobs:
                       /usr/local/graalvm /usr/local/share/powershell
           sudo apt-get clean
           sudo rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
-          sudo swapoff -a
-          sudo rm -f /swapfile
+          sudo swapoff -a && sudo rm -f /swapfile
           df -h /
 
       - name: Install deps
@@ -63,11 +59,11 @@ jobs:
             -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git \
             -b twrp-14 --depth=1 --no-clone-bundle
           timeout 3600 ~/bin/repo sync -c -j4 --no-clone-bundle --no-tags \
-            --optimized-fetch --prune 2>&1 | tail -15
-          [ -f build/envsetup.sh ] && echo "✅ envsetup.sh" || { echo "❌ envsetup missing"; exit 1; }
+            --optimized-fetch --prune 2>&1 | tail -10
+          [ -f build/envsetup.sh ] && echo "✅ envsetup.sh OK" || { echo "❌ envsetup missing"; exit 1; }
           df -h /
 
-      - name: Clone device tree (with LFS)
+      - name: Clone + patch device tree
         working-directory: ${{ github.workspace }}/twrp-tree
         run: |
           set +e
@@ -76,34 +72,39 @@ jobs:
             device/lava/lxx521
           cd device/lava/lxx521
           git lfs install --local 2>/dev/null
-          git lfs pull 2>&1 | tail -3
+          git lfs pull 2>&1 | tail -2
 
           echo ""
-          echo "════════ Device tree files ════════"
+          echo "════════ BEFORE PATCH ════════"
+          echo "--- AndroidProducts.mk ---"
+          cat AndroidProducts.mk
+          echo "--- twrp_lxx521.mk (PRODUCT_RELEASE_NAME) ---"
+          grep PRODUCT_RELEASE_NAME twrp_lxx521.mk 2>/dev/null || echo "not set"
+
+          echo ""
+          echo "════════ APPLYING AOSP 14 LUNCH FIX ════════"
+          # Fix 1: Clean PRODUCT_RELEASE_NAME
+          sed -i '/^PRODUCT_RELEASE_NAME/d' twrp_lxx521.mk
+          echo 'PRODUCT_RELEASE_NAME := ap3a' >> twrp_lxx521.mk
+
+          # Fix 2: Replace COMMON_LUNCH_CHOICES with 3-part format
+          sed -i '/^COMMON_LUNCH_CHOICES/d' AndroidProducts.mk
+          echo 'COMMON_LUNCH_CHOICES := twrp_lxx521-ap3a-eng twrp_lxx521-ap3a-userdebug' >> AndroidProducts.mk
+
+          echo ""
+          echo "════════ AFTER PATCH ════════"
+          echo "--- AndroidProducts.mk ---"
+          cat AndroidProducts.mk
+          echo "--- PRODUCT_RELEASE_NAME ---"
+          grep PRODUCT_RELEASE_NAME twrp_lxx521.mk
+
+          echo ""
+          echo "════════ prebuilt files ════════"
           ls -la prebuilt/
-          echo ""
-          echo "════════ kernel size ════════"
-          KSZ=$(stat -c %s prebuilt/kernel 2>/dev/null || echo 0)
-          echo "kernel: $KSZ bytes"
-          if [ "$KSZ" -lt 100000 ]; then
-            echo "⚠️ kernel LFS pointer detected"
-            file prebuilt/kernel
-          else
-            echo "✅ kernel real:"
-            file prebuilt/kernel
-          fi
+          echo "kernel: $(stat -c %s prebuilt/kernel) bytes"
+          echo "ramdisk: $(stat -c %s prebuilt/stock_ramdisk.cpio.lz4) bytes"
 
-          echo ""
-          echo "════════ ramdisk size ════════"
-          RSZ=$(stat -c %s prebuilt/stock_ramdisk.cpio.lz4 2>/dev/null || echo 0)
-          echo "ramdisk: $RSZ bytes"
-          [ "$RSZ" -lt 1000000 ] && echo "⚠️ ramdisk LFS pointer" || echo "✅ ramdisk real"
-
-          echo ""
-          echo "════════ BoardConfig refs ════════"
-          grep -iE "TARGET_PREBUILT_KERNEL|BOARD_PREBUILT_VENDOR_RAMDISK|TARGET_NO_KERNEL" BoardConfig.mk
-
-      - name: Build TWRP
+      - name: Build TWRP (vendor_boot)
         working-directory: ${{ github.workspace }}/twrp-tree
         run: |
           set +e
@@ -115,25 +116,41 @@ jobs:
           ccache -z
 
           source build/envsetup.sh
-          [ "$?" != "0" ] && { echo "::error::envsetup failed"; exit 1; }
 
-          echo "════════ Lunch ════════"
+          echo "════════ Available lunch targets ════════"
+          lunch 2>&1 | head -30
+          echo ""
+
+          echo "════════ Lunch attempts ════════"
           LUNCHED=0
-          for combo in twrp_lxx521-eng twrp_lxx521-userdebug; do
-            echo ">>> $combo"
+          for combo in \
+            "twrp_lxx521-ap3a-eng" \
+            "twrp_lxx521-ap3a-userdebug" \
+            "twrp_lxx521-ap3a-user" \
+            "twrp_lxx521-trunk_staging-eng"; do
+            echo ">>> trying: $combo"
             if lunch "$combo" >/tmp/lunch.log 2>&1; then
-              echo "✅ $combo OK"
+              echo "✅ SUCCESS: $combo"
               LUNCHED=1
               break
+            else
+              tail -5 /tmp/lunch.log | sed 's/^/   /'
             fi
           done
 
-          [ "$LUNCHED" != "1" ] && { echo "❌ Lunch failed"; tail -30 /tmp/lunch.log; exit 1; }
+          if [ "$LUNCHED" != "1" ]; then
+            echo "❌ All lunch failed"
+            echo "--- Full available targets ---"
+            lunch 2>&1 | tail -40
+            exit 1
+          fi
 
           echo ""
-          echo "════════ Building ════════"
-          mka recoveryimage vendor_boot -j4 2>&1 | tail -150
+          echo "════════ Building vendor_bootimage ════════"
+          echo "(no recovery partition on this device — TWRP goes to vendor_boot)"
+          mka vendorbootimage -j4 2>&1 | tail -150
           echo "exit: $?"
+
           ccache -s
 
       - name: Collect images
@@ -143,17 +160,22 @@ jobs:
           mkdir -p output
           for d in out/target/product/*/; do
             [ -d "$d" ] || continue
-            find "$d" -maxdepth 1 -type f -name "*.img" -exec cp -v {} output/ \;
+            echo ">>> scanning $d"
+            find "$d" -maxdepth 1 -type f \( -name "*.img" -o -name "boot.img" \) -exec cp -v {} output/ \;
           done
 
           echo ""
           echo "════════ Collected ════════"
           ls -lh output/
           for img in output/*.img; do
-            [ -f "$img" ] && echo "  $(stat -c %s "$img") bytes  $img"
+            [ -f "$img" ] && echo "  $(stat -c %s "$img") bytes  $(basename $img)"
           done
 
-          [ -z "$(ls -A output/ 2>/dev/null)" ] && { echo "❌ No images"; exit 1; }
+          if [ -z "$(ls -A output/ 2>/dev/null)" ]; then
+            echo "❌ No images — showing out/ contents:"
+            find out -name "*.img" -type f 2>/dev/null | head -20
+            exit 1
+          fi
 
       - uses: actions/upload-artifact@v4
         if: always()
