@@ -63,7 +63,7 @@ jobs:
             -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git \
             -b twrp-14 --depth=1 --no-clone-bundle
           timeout 3600 ~/bin/repo sync -c -j4 --no-clone-bundle --no-tags \
-            --optimized-fetch --prune --depth=1 2>&1 | tail -15
+            --optimized-fetch --prune 2>&1 | tail -15
           [ -f build/envsetup.sh ] && echo "✅ envsetup.sh" || { echo "❌ envsetup missing"; exit 1; }
           df -h /
 
