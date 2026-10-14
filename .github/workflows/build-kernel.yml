@@ -6,15 +6,19 @@ on:
       kernel_source:
         description: "Kernel repo"
         required: true
-        default: "mt6878-devs/android_kernel_device_modules"
+        default: "NothingOSS/android_kernel_6.1_nothing_mt6878"
       kernel_branch:
         description: "Branch"
         required: true
-        default: "lineage-23.2"
-      build_target:
-        description: "Build config target (see diagnostics)"
+        default: "main"
+      defconfig:
+        description: "Defconfig (empty=auto)"
+        required: false
+        default: ""
+      ksu_variant:
+        description: "KernelSU"
         required: true
-        default: "mtk_kernel_device_modules"
+        default: "KernelSU-Next"
 
 jobs:
   build:
@@ -46,12 +50,10 @@ jobs:
         run: |
           sudo mkdir -p /opt/tc/clang-17
           cd /opt/tc/clang-17
-          sudo curl -fsSL --retry 3 -o clang.tar.gz \
+          sudo curl -fsSL --retry 3 -o c.tgz \
             "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-14.0.0_r74/clang-r487747c.tar.gz"
-          sudo tar xzf clang.tar.gz
-          sudo rm clang.tar.gz
-          echo "=== clang contents ==="
-          ls /opt/tc/clang-17/ | head
+          sudo tar xzf c.tgz
+          sudo rm c.tgz
           /opt/tc/clang-17/bin/clang --version
 
       - name: Clone kernel
@@ -59,59 +61,88 @@ jobs:
           set -e
           R="${{ inputs.kernel_source }}"
           B="${{ inputs.kernel_branch }}"
-          git clone --depth=1 --branch "$B" "https://github.com/$R.git" ksrc 2>&1 | tail -3 || \
+          echo ">>> cloning $R @ $B"
+          if ! git clone --depth=1 --branch "$B" "https://github.com/$R.git" ksrc 2>&1 | tail -3; then
+            echo ">>> branch failed, trying default"
             git clone --depth=1 "https://github.com/$R.git" ksrc
+          fi
           cd ksrc
           echo "HEAD: $(git log -1 --oneline)"
 
-      - name: DIAGNOSTICS
+      - name: Diagnostics
         working-directory: ksrc
         run: |
           set +e
-          echo "════════════════════════════════════════"
-          echo "  DIAGNOSTICS — what's actually here"
-          echo "════════════════════════════════════════"
-
-          echo ""
-          echo ">>> Top-level files:"
+          echo "════════ DIAGNOSTICS ════════"
+          echo ">>> Top-level:"
           ls -la | head -30
-
           echo ""
-          echo ">>> build.config.* files:"
-          ls -la build.config.* 2>/dev/null || echo "  NONE"
-
+          echo ">>> Makefile exists?"
+          [ -f Makefile ] && { echo "YES"; head -20 Makefile; } || echo "NO"
           echo ""
-          echo ">>> build/ directory:"
-          ls -la build/ 2>/dev/null || echo "  NO build/ dir"
-
+          echo ">>> configs (mtk/mt6878/nothing):"
+          ls arch/arm64/configs/ 2>/dev/null | grep -iE "mtk|mt6878|nothing|defconfig" | head -30
           echo ""
-          echo ">>> arch/arm64/configs (first 40):"
-          ls arch/arm64/configs/ 2>/dev/null | head -40 || echo "  NO configs dir"
-
+          echo ">>> total configs:"
+          ls arch/arm64/configs/ 2>/dev/null | wc -l
           echo ""
-          echo ">>> configs matching mtk/k6878/mt6878/mgk:"
-          ls arch/arm64/configs/ 2>/dev/null | grep -iE "mtk|k6878|mt6878|mgk|lxx" | head -20 || echo "  NONE"
+          echo ">>> size of defconfigs:"
+          ls -la arch/arm64/configs/*defconfig 2>/dev/null | head -20
 
-          echo ""
-          echo ">>> defconfigs with non-zero size:"
-          for f in arch/arm64/configs/*defconfig; do
-            [ -f "$f" ] || continue
-            SZ=$(stat -c %s "$f")
-            [ "$SZ" -gt 100 ] && echo "  $SZ bytes  $(basename $f)"
-          done | head -20
+      - name: Integrate KernelSU
+        if: inputs.ksu_variant != 'none'
+        working-directory: ksrc
+        run: |
+          git clone --depth=1 https://github.com/KernelSU-Next/KernelSU-Next.git KernelSU
+          echo "KSU: $(cd KernelSU && git rev-parse HEAD)"
 
-          echo ""
-          echo ">>> Android.bp / build system markers:"
-          ls -la Android.bp Android.mk Makefile 2>/dev/null
-
-          echo "════════════════════════════════════════"
-
-      - name: Try GKI build.sh
+      - name: Find defconfig
+        id: dc
         working-directory: ksrc
         run: |
           set +e
+          # Check Makefile exists first
+          if [ ! -f Makefile ]; then
+            echo "::error::No Makefile — this is NOT a standalone kernel"
+            exit 1
+          fi
+
+          D="${{ inputs.defconfig }}"
+          if [ -n "$D" ] && [ -f "arch/arm64/configs/$D" ]; then
+            echo "name=$D" >> $GITHUB_OUTPUT
+            echo "Using: $D"
+            exit 0
+          fi
+
+          # Auto-detect
+          for pat in "nothing" "mt6878" "mt6835" "mtk"; do
+            for f in arch/arm64/configs/*${pat}*_defconfig; do
+              [ -f "$f" ] || continue
+              BN=$(basename "$f")
+              echo "name=$BN" >> $GITHUB_OUTPUT
+              echo "Auto: $BN"
+              exit 0
+            done
+          done
+
+          # Any defconfig
+          for f in arch/arm64/configs/*_defconfig; do
+            [ -f "$f" ] || continue
+            BN=$(basename "$f")
+            echo "name=$BN" >> $GITHUB_OUTPUT
+            echo "Fallback: $BN"
+            exit 0
+          done
+
+          echo "::error::No defconfig found"
+          exit 1
+
+      - name: Configure
+        working-directory: ksrc
+        run: |
+          set -euo pipefail
           export PATH=/opt/tc/clang-17/bin:$PATH
-          export ARCH=arm64
+          export ARCH=arm64 SUBARCH=arm64
           export CC=clang
           export CLANG_TRIPLE=aarch64-linux-gnu-
           export CROSS_COMPILE=aarch64-linux-gnu-
@@ -120,62 +151,113 @@ jobs:
           export OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump
           export READELF=llvm-readelf STRIP=llvm-strip
 
-          TARGET="${{ inputs.build_target }}"
+          DC="${{ steps.dc.outputs.name }}"
+          echo ">>> make O=out $DC"
+          make O=out ARCH=arm64 "$DC"
 
-          if [ -f "build/build.sh" ] && [ -f "build.config.${TARGET}" ]; then
-            echo ">>> GKI-style build via build/build.sh"
-            echo ">>> BUILD_CONFIG=build.config.${TARGET}"
-            BUILD_CONFIG=build.config.${TARGET} build/build.sh 2>&1 | tail -150
-            echo "build rc: $?"
-          else
-            echo ">>> GKI build.sh not found or config missing"
-            echo ">>> Trying make-based build"
+          # Check .config was created
+          if [ ! -f out/.config ]; then
+            echo "::error::make defconfig did not create out/.config"
+            exit 1
+          fi
+          echo "✅ .config created: $(stat -c %s out/.config) bytes"
 
-            for DC in mgk_64_k61_defconfig k6878v1_64_defconfig mt6878_defconfig; do
-              [ -f "arch/arm64/configs/$DC" ] || continue
-              echo ""
-              echo ">>> Trying $DC"
-              rm -rf out
-              if make O=out ARCH=arm64 "$DC" 2>&1 | tail -3; then
-                echo "✅ $DC config OK"
-                make O=out ARCH=arm64 -j"$(nproc)" Image 2>&1 | tail -100
-                break
-              fi
-            done
+          # KSU configs
+          if [ "${{ inputs.ksu_variant }}" != "none" ]; then
+            ./scripts/config --file out/.config \
+              -e CONFIG_KSU \
+              -e CONFIG_KALLSYMS \
+              -e CONFIG_KALLSYMS_ALL \
+              -e CONFIG_MODULES \
+              -d CONFIG_MODULE_SIG \
+              -d CONFIG_MODULE_SIG_ALL \
+              -d CONFIG_MODULE_SIG_FORCE \
+              -d CONFIG_MODVERSIONS || true
+            make O=out ARCH=arm64 olddefconfig
           fi
 
+          echo ""
+          echo "=== Config summary ==="
+          grep -E "^CONFIG_(KSU|KALLSYMS|MODULES|MODVERSIONS|LOCALVERSION)" out/.config | head -10
+
+      - name: Build
+        working-directory: ksrc
+        run: |
+          set -euo pipefail
+          export PATH=/opt/tc/clang-17/bin:$PATH
+          export ARCH=arm64 SUBARCH=arm64
+          export CC=clang
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+          export LD=ld.lld AR=llvm-ar NM=llvm-nm
+          export OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump
+          export READELF=llvm-readelf STRIP=llvm-strip
+
+          JOBS=$(nproc)
+          [ "$JOBS" -gt 4 ] && JOBS=4
+          echo ">>> Building -j$JOBS"
+
+          # Force rebuild — check exit code properly
+          set +e
+          make O=out ARCH=arm64 -j"$JOBS" Image 2>&1 | tail -200
+          IMG_RC=${PIPESTATUS[0]}
+          set -e
+          echo "Image build rc: $IMG_RC"
+
+          if [ "$IMG_RC" != "0" ]; then
+            echo "::error::Image build failed"
+            exit 1
+          fi
+
+          # Verify Image exists
+          if [ ! -f out/arch/arm64/boot/Image ]; then
+            echo "::error::Image not produced despite rc=0"
+            ls -la out/arch/arm64/boot/
+            exit 1
+          fi
+          echo "✅ Image: $(stat -c %s out/arch/arm64/boot/Image) bytes"
+
+          # Optional: dtbs and modules
+          set +e
+          make O=out ARCH=arm64 -j"$JOBS" dtbs 2>&1 | tail -20
+          make O=out ARCH=arm64 -j"$JOBS" modules 2>&1 | tail -30
+          set -e
+
       - name: Collect
+        working-directory: ksrc
         run: |
           set +e
-          mkdir -p kout
-          # Search everywhere
-          find ksrc -type f \( \
-            -name "Image" -o -name "Image.gz" -o -name "Image.lz4" \
-            -o -name "vmlinux" -o -name "*.dtb" -o -name "dtbo.img" \
-            -o -name "System.map" \) 2>/dev/null | head -50 | while read f; do
-            cp "$f" kout/ 2>/dev/null
+          mkdir -p ../kout
+          cp -v out/arch/arm64/boot/Image ../kout/ 2>/dev/null
+          cp -v out/arch/arm64/boot/Image.gz ../kout/ 2>/dev/null
+          cp -v out/arch/arm64/boot/Image.lz4 ../kout/ 2>/dev/null
+          cp -v out/arch/arm64/boot/dts/**/*.dtb ../kout/ 2>/dev/null
+          cp -v out/vmlinux ../kout/ 2>/dev/null
+          cp -v out/System.map ../kout/ 2>/dev/null
+          find out -name "*.ko" -type f 2>/dev/null | head -200 | while read ko; do
+            cp "$ko" ../kout/ 2>/dev/null
           done
-          find ksrc -name "*.ko" -type f 2>/dev/null | head -100 | while read ko; do
-            cp "$ko" kout/ 2>/dev/null
-          done
-          echo "=== Collected ==="
-          ls -lh kout/ 2>/dev/null | head -30
+          echo "=== kout ==="
+          ls -lh ../kout/ | head -30
 
       - name: Verify
         run: |
           set +e
-          cd kout 2>/dev/null || { echo "no kout"; exit 1; }
+          cd kout
           echo "════════ VERIFY ════════"
           OK=0
           for f in Image Image.gz Image.lz4 vmlinux; do
-            [ -f "$f" ] && { echo "✅ $f: $(stat -c %s "$f")"; OK=1; }
+            [ -f "$f" ] && { echo "✅ $f: $(stat -c %s "$f") bytes"; OK=1; }
           done
           [ -f Image ] && {
             echo ""
             echo "Kernel: $(strings Image | grep -E 'Linux version 6\.' | head -1)"
+            echo "KSU:    $(strings Image | grep -icE 'kernelsu|ksu_')"
           }
           echo "Modules: $(ls *.ko 2>/dev/null | wc -l)"
-          [ "$OK" = "1" ] && echo "✅ KERNEL BUILT" || echo "⚠️ No Image found"
+          echo "DTBs:    $(ls *.dtb 2>/dev/null | wc -l)"
+          [ "$OK" = "1" ] && echo "✅ KERNEL BUILT" || { echo "❌ NO KERNEL"; exit 1; }
 
       - name: Upload
         if: always()
