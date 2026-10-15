@@ -66,10 +66,7 @@ jobs:
           ./magiskboot cpio ramdisk.cpio "mkdir 0755 lib/modules"
           ./magiskboot cpio ramdisk.cpio "add 0644 lib/modules/kernelsu.ko kernelsu.ko"
 
-          cat > init.kernelsu.rc << 'RCEOF'
-on post-fs-data
-    insmod /lib/modules/kernelsu.ko
-RCEOF
+          printf "on post-fs-data\n    insmod /lib/modules/kernelsu.ko\n" > init.kernelsu.rc
           ./magiskboot cpio ramdisk.cpio "add 0644 init.kernelsu.rc init.kernelsu.rc"
 
           # Verify module existence in ramdisk
