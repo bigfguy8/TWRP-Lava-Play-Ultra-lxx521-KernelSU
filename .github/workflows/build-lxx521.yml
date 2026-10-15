@@ -184,10 +184,6 @@ jobs:
           cd device/lava/lxx521
           git lfs install --local 2>/dev/null
           git lfs pull 2>&1 | tail -2
-          sed -i "/^PRODUCT_RELEASE_NAME/d" twrp_lxx521.mk
-          echo "PRODUCT_RELEASE_NAME := ap3a" >> twrp_lxx521.mk
-          sed -i "/^COMMON_LUNCH_CHOICES/d" AndroidProducts.mk
-          echo "COMMON_LUNCH_CHOICES := twrp_lxx521-ap3a-eng twrp_lxx521-ap3a-userdebug" >> AndroidProducts.mk
           cat AndroidProducts.mk
 
       - name: Build TWRP vendor_boot
@@ -202,13 +198,21 @@ jobs:
           ccache -z
           source build/envsetup.sh
           LUNCHED=0
-          for combo in "twrp_lxx521-ap3a-eng" "twrp_lxx521-ap3a-userdebug"; do
+          for combo in "twrp_lxx521-eng" "twrp_lxx521-userdebug" "twrp_lxx521-ap3a-eng" "twrp_lxx521-ap3a-userdebug"; do
+            echo ">>> Trying: $combo"
             if lunch "$combo" >/tmp/lunch.log 2>&1; then
+              echo "OK: Lunch $combo"
               LUNCHED=1
               break
+            else
+              tail -3 /tmp/lunch.log | sed "s/^/    /"
             fi
           done
-          [ "$LUNCHED" = "1" ] || { lunch 2>&1 | tail -40; exit 1; }
+          if [ "$LUNCHED" != "1" ]; then
+            echo "ERROR: All lunch attempts failed"
+            cat device/lava/lxx521/AndroidProducts.mk
+            exit 1
+          fi
           mka vendorbootimage -j4 2>&1 | tail -150
           ccache -s
 
