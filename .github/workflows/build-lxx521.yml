@@ -187,27 +187,27 @@ jobs:
           cat AndroidProducts.mk
 
           echo "════════ APPLYING ANDROID 14 LUNCH FIX ════════"
-          # Show original state
-          echo "--- BEFORE: PRODUCT_RELEASE_NAME ---"
-          grep "^PRODUCT_RELEASE_NAME" twrp_lxx521.mk || echo "(not present)"
-          echo "--- BEFORE: COMMON_LUNCH_CHOICES ---"
-          grep "^COMMON_LUNCH_CHOICES" AndroidProducts.mk || echo "(not present)"
+          echo "--- BEFORE ---"
+          cat twrp_lxx521.mk
+          echo "---"
+          cat AndroidProducts.mk
 
-          # Force replace invalid PRODUCT_RELEASE_NAME (has spaces) with valid ap2a
-          sed -i "/^PRODUCT_RELEASE_NAME/d" twrp_lxx521.mk
-          echo "PRODUCT_RELEASE_NAME := ap2a" >> twrp_lxx521.mk
-          echo "✅ Set PRODUCT_RELEASE_NAME := ap2a"
+          # Remove ALL lines containing PRODUCT_RELEASE_NAME (any position)
+          grep -v "PRODUCT_RELEASE_NAME" twrp_lxx521.mk > twrp_lxx521.mk.new || true
+          mv twrp_lxx521.mk.new twrp_lxx521.mk
 
-          # Force replace COMMON_LUNCH_CHOICES to 3-part format
-          sed -i "/^COMMON_LUNCH_CHOICES/d" AndroidProducts.mk
-          echo "COMMON_LUNCH_CHOICES := twrp_lxx521-ap2a-eng twrp_lxx521-ap2a-userdebug" >> AndroidProducts.mk
-          echo "✅ Set COMMON_LUNCH_CHOICES"
+          # Add valid ap2a
+          printf "PRODUCT_RELEASE_NAME := ap2a\\n" >> twrp_lxx521.mk
+          echo "✅ PRODUCT_RELEASE_NAME := ap2a"
 
-          # Verify
-          echo "--- AFTER: PRODUCT_RELEASE_NAME ---"
-          grep "^PRODUCT_RELEASE_NAME" twrp_lxx521.mk
-          echo "--- AFTER: COMMON_LUNCH_CHOICES ---"
-          grep "^COMMON_LUNCH_CHOICES" AndroidProducts.mk
+          # Same for COMMON_LUNCH_CHOICES
+          grep -v "COMMON_LUNCH_CHOICES" AndroidProducts.mk > AndroidProducts.mk.new || true
+          mv AndroidProducts.mk.new AndroidProducts.mk
+          printf "COMMON_LUNCH_CHOICES := twrp_lxx521-ap2a-eng twrp_lxx521-ap2a-userdebug\\n" >> AndroidProducts.mk
+          echo "✅ COMMON_LUNCH_CHOICES updated"
+
+          echo "--- AFTER ---"
+          grep -i "release\|lunch" twrp_lxx521.mk AndroidProducts.mk
           echo "════════ AFTER PATCH ════════"
           echo "--- AndroidProducts.mk ---"
           cat AndroidProducts.mk
