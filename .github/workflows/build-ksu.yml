@@ -25,9 +25,10 @@ jobs:
       - name: Verify stock image
         run: |
           ls -lh init_boot_stock.img
-          C=$(strings -a init_boot_stock.img 2>/dev/null | grep -cE "kernelsu|ksud|u:r:ksu" || echo 0)
+          C=$(strings -a init_boot_stock.img 2>/dev/null | grep -cE "kernelsu|ksud|u:r:ksu" | head -n 1 || echo 0)
+          C=${C:-0}
           echo "KSU refs in stock: $C"
-          if [ "$C" -ge 3 ]; then echo "Already patched"; exit 1; fi
+          if [ "$C" -gt 3 ]; then echo "Already patched"; exit 1; fi
 
       - name: Extract magiskboot and Download KSU Assets
         run: |
@@ -66,10 +67,14 @@ jobs:
           ./magiskboot cpio ramdisk.cpio "add 0644 lib/modules/kernelsu.ko kernelsu.ko"
 
           cat > init.kernelsu.rc << 'RCEOF'
-          on post-fs-data
-              insmod /lib/modules/kernelsu.ko
-          RCEOF
+on post-fs-data
+    insmod /lib/modules/kernelsu.ko
+RCEOF
           ./magiskboot cpio ramdisk.cpio "add 0644 init.kernelsu.rc init.kernelsu.rc"
+
+          # Verify module existence in ramdisk
+          ./magiskboot cpio ramdisk.cpio "exists lib/modules/kernelsu.ko" || { echo "❌ KSU Module Missing in CPIO!"; exit 1; }
+          echo "✅ KSU Module successfully verified in ramdisk!"
 
       - name: Repack and Verify Image
         run: |
