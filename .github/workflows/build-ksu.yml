@@ -22,113 +22,70 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Verify stock
+      - name: Verify stock image
         run: |
-          export TARGET_RELEASE=ap3a
           ls -lh init_boot_stock.img
           C=$(strings -a init_boot_stock.img 2>/dev/null | grep -cE "kernelsu|ksud|u:r:ksu" || echo 0)
           echo "KSU refs in stock: $C"
           if [ "$C" -ge 3 ]; then echo "Already patched"; exit 1; fi
 
-      - name: Download magiskboot + KSU assets
+      - name: Extract magiskboot and Download KSU Assets
         run: |
-          export TARGET_RELEASE=ap3a
           set -e
           KSU_VER="${{ inputs.ksu_version }}"
           KMI="${{ inputs.kmi }}"
           BASE="https://github.com/KernelSU-Next/KernelSU-Next/releases/download/${KSU_VER}"
 
-          echo ">>> magiskboot (standalone binary)"
-          curl -fL --retry 3 -o magiskboot https://github.com/WazeKernel/magiskboot_binary/raw/master/x86_64/magiskboot || \
-          curl -fL --retry 3 -o magiskboot https://github.com/Uevo001/magiskboot-linux/raw/main/x86_64/magiskboot
-          
+          echo ">>> Downloading Official Magisk APK for x86_64 magiskboot..."
+          curl -fL --retry 3 -o magisk.apk https://github.com/topjohnwu/Magisk/releases/download/v27.0/Magisk-v27.0.apk
+          unzip -o -q magisk.apk "lib/x86_64/libmagiskboot.so"
+          mv -f lib/x86_64/libmagiskboot.so magiskboot
+          rm -rf lib magisk.apk
           chmod +x magiskboot
-          ./magiskboot 2>&1 | head -15 || true
+          ./magiskboot 2>&1 | head -5
 
-          echo ">>> kernelsu.ko"
+          echo ">>> Downloading kernelsu.ko..."
           curl -fL --retry 3 -o kernelsu.ko "${BASE}/aarch64_${KMI}_kernelsu.ko"
 
-          echo ">>> Manager APK"
-          APK_NAME=$(curl -s "https://api.github.com/repos/KernelSU-Next/KernelSU-Next/releases/tags/${KSU_VER}" \
-            | python3 -c "import sys,json; d=json.load(sys.stdin); n=[a['name'] for a in d.get('assets',[]) if a['name'].endswith('-release.apk') and 'spoofed' not in a['name']]; print(n[0] if n else '')" 2>/dev/null || echo "")
+          echo ">>> Downloading Manager APK..."
+          APK_NAME=$(curl -s "https://api.github.com/repos/KernelSU-Next/KernelSU-Next/releases/tags/${KSU_VER}"             | python3 -c "import sys,json; d=json.load(sys.stdin); n=[a['name'] for a in d.get('assets',[]) if a['name'].endswith('-release.apk') and 'spoofed' not in a['name']]; print(n[0] if n else '')" 2>/dev/null || echo "")
           [ -n "$APK_NAME" ] || { echo "APK not found"; exit 1; }
           curl -fL --retry 3 -o kernelsu-manager.apk "${BASE}/${APK_NAME}"
 
           ls -lh magiskboot kernelsu.ko kernelsu-manager.apk
 
-      - name: Unpack init_boot.img
+      - name: Unpack and Patch Ramdisk
         run: |
-          export TARGET_RELEASE=ap3a
           set -e
           cp init_boot_stock.img boot.img
           ./magiskboot unpack boot.img
-          echo "=== Unpacked ==="
-          ls -la
-          echo "=== ramdisk.cpio ==="
-          ls -lh ramdisk.cpio
 
-      - name: Patch ramdisk with KernelSU
-        run: |
-          export TARGET_RELEASE=ap3a
-          set -e
-
-          # Extract init.rc if present
-          rm -f init.rc
-          ./magiskboot cpio ramdisk.cpio "extract init.rc init.rc" || echo "init.rc not found, skipping import patch"
-
-          # Create module directory
           ./magiskboot cpio ramdisk.cpio "mkdir 0755 lib" || true
           ./magiskboot cpio ramdisk.cpio "mkdir 0755 lib/modules" || true
-
-          # Add kernelsu.ko
           ./magiskboot cpio ramdisk.cpio "add 0644 lib/modules/kernelsu.ko kernelsu.ko"
 
-          # Create rc file
           cat > init.kernelsu.rc << 'RCEOF'
           on post-fs-data
               insmod /lib/modules/kernelsu.ko
           RCEOF
           ./magiskboot cpio ramdisk.cpio "add 0644 init.kernelsu.rc init.kernelsu.rc"
 
-          # Patch init.rc if it existed
-          if [ -f init.rc ]; then
-            cp init.rc init.rc.new
-            echo "" >> init.rc.new
-            echo "import /init.kernelsu.rc" >> init.rc.new
-            ./magiskboot cpio ramdisk.cpio "add 0644 init.rc init.rc.new"
-            echo "✅ init.rc patched"
-          fi
-
-          echo "✅ Ramdisk successfully patched with KernelSU!"
-
-      - name: Repack
+      - name: Repack and Verify Image
         run: |
-          export TARGET_RELEASE=ap3a
           set -e
           mkdir -p output
           ./magiskboot repack boot.img output/init_boot-patched.img
           ls -lh output/
-          echo "MD5: $(md5sum output/init_boot-patched.img | awk '{print $1}')"
 
-      - name: Verify output
-        run: |
-          export TARGET_RELEASE=ap3a
-          set -e
           P="output/init_boot-patched.img"
           [ -f "$P" ] || { echo "No output file"; exit 1; }
-
-          SIZE=$(stat -c %s "$P")
-          echo "Size: $SIZE"
-
-          MAGIC=$(head -c 8 "$P" | tr -d '\0')
+          MAGIC=$(head -c 8 "$P" | tr -d "\0")
           echo "Magic: $MAGIC"
           [ "${MAGIC:0:8}" = "ANDROID!" ] || { echo "Bad magic"; exit 1; }
-
           echo "✅ Output verification passed!"
 
-      - name: Prepare artifact
+      - name: Prepare Artifacts
         run: |
-          export TARGET_RELEASE=ap3a
           cp init_boot_stock.img output/
           cp kernelsu.ko "output/kernelsu-lkm-${{ inputs.kmi }}.ko"
           cp kernelsu-manager.apk output/
@@ -136,6 +93,6 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: KernelSU-Lava-lxx521-${{ inputs.ksu_version }}-magiskboot
+          name: KernelSU-Lava-lxx521-${{ inputs.ksu_version }}-patched
           path: output/
           if-no-files-found: error
