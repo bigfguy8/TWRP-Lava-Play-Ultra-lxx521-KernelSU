@@ -76,20 +76,30 @@ jobs:
           set -e
           cp init_boot_stock.img boot.img
           ./magiskboot unpack boot.img
-          ./magiskboot cpio ramdisk.cpio "extract init.rc init.rc.stock"
-          cp init.rc.stock init.rc
-          if ! grep -q "import /init.kernelsu.rc" init.rc; then
-            echo "" >> init.rc
-            echo "# KernelSU-Next import" >> init.rc
-            echo "import /init.kernelsu.rc" >> init.rc
+          if ./magiskboot cpio ramdisk.cpio "extract init.rc init.rc.stock" 2>/dev/null; then
+            echo "OK: init.rc found in ramdisk"
+            cp init.rc.stock init.rc
+            if ! grep -q "import /init.kernelsu.rc" init.rc; then
+              echo "" >> init.rc
+              echo "# KernelSU-Next import" >> init.rc
+              echo "import /init.kernelsu.rc" >> init.rc
+            fi
+            INIT_RC_MODIFIED=1
+          else
+            echo "NOTE: init.rc not in ramdisk (Android 13+ normal)"
+            INIT_RC_MODIFIED=0
           fi
           printf '%s\n' '# KernelSU-Next init integration' 'on post-fs-data' '    insmod /lib/modules/kernelsu.ko' '' 'on boot' '    chmod 0644 /dev/kernelsu' > init.kernelsu.rc
           ./magiskboot cpio ramdisk.cpio "mkdir 0755 lib"
           ./magiskboot cpio ramdisk.cpio "mkdir 0755 lib/modules"
           ./magiskboot cpio ramdisk.cpio "add 0644 lib/modules/kernelsu.ko kernelsu.ko"
           ./magiskboot cpio ramdisk.cpio "add 0644 init.kernelsu.rc init.kernelsu.rc"
-          ./magiskboot cpio ramdisk.cpio "add 0750 init.rc init.rc"
-          rm -f init.rc init.rc.stock
+          ./magiskboot cpio ramdisk.cpio "mkdir 0755 system/etc/init" 2>/dev/null || true
+          ./magiskboot cpio ramdisk.cpio "add 0644 system/etc/init/kernelsu.rc init.kernelsu.rc" 2>/dev/null || true
+          if [ "$INIT_RC_MODIFIED" = "1" ]; then
+            ./magiskboot cpio ramdisk.cpio "add 0750 init.rc init.rc"
+            rm -f init.rc init.rc.stock
+          fi
           ./magiskboot cpio ramdisk.cpio "exists lib/modules/kernelsu.ko"
           ./magiskboot cpio ramdisk.cpio "exists init.kernelsu.rc"
           mkdir -p output
