@@ -48,7 +48,8 @@ jobs:
           curl -fL --retry 3 -o kernelsu.ko "${BASE}/aarch64_${KMI}_kernelsu.ko"
 
           echo ">>> Downloading Manager APK..."
-          APK_NAME=$(curl -s "https://api.github.com/repos/KernelSU-Next/KernelSU-Next/releases/tags/${KSU_VER}"             | python3 -c "import sys,json; d=json.load(sys.stdin); n=[a['name'] for a in d.get('assets',[]) if a['name'].endswith('-release.apk') and 'spoofed' not in a['name']]; print(n[0] if n else '')" 2>/dev/null || echo "")
+          APK_NAME=$(curl -s "https://api.github.com/repos/KernelSU-Next/KernelSU-Next/releases/tags/${KSU_VER}" \
+            | python3 -c "import sys,json; d=json.load(sys.stdin); n=[a['name'] for a in d.get('assets',[]) if a['name'].endswith('-release.apk') and 'spoofed' not in a['name']]; print(n[0] if n else '')" 2>/dev/null || echo "")
           [ -n "$APK_NAME" ] || { echo "APK not found"; exit 1; }
           curl -fL --retry 3 -o kernelsu-manager.apk "${BASE}/${APK_NAME}"
 
@@ -60,8 +61,8 @@ jobs:
           cp init_boot_stock.img boot.img
           ./magiskboot unpack boot.img
 
-          ./magiskboot cpio ramdisk.cpio "mkdir 0755 lib" || true
-          ./magiskboot cpio ramdisk.cpio "mkdir 0755 lib/modules" || true
+          ./magiskboot cpio ramdisk.cpio "mkdir 0755 lib"
+          ./magiskboot cpio ramdisk.cpio "mkdir 0755 lib/modules"
           ./magiskboot cpio ramdisk.cpio "add 0644 lib/modules/kernelsu.ko kernelsu.ko"
 
           cat > init.kernelsu.rc << 'RCEOF'
@@ -79,7 +80,7 @@ jobs:
 
           P="output/init_boot-patched.img"
           [ -f "$P" ] || { echo "No output file"; exit 1; }
-          MAGIC=$(head -c 8 "$P" | tr -d "\0")
+          MAGIC=$(head -c 8 "$P" | tr -d '\0')
           echo "Magic: $MAGIC"
           [ "${MAGIC:0:8}" = "ANDROID!" ] || { echo "Bad magic"; exit 1; }
           echo "✅ Output verification passed!"
