@@ -197,20 +197,30 @@ jobs:
           ccache -M 30G
           ccache -z
           source build/envsetup.sh
+          export TARGET_RELEASE=ap2a
           LUNCHED=0
-          for combo in "twrp_lxx521-eng" "twrp_lxx521-userdebug" "twrp_lxx521-ap3a-eng" "twrp_lxx521-ap3a-userdebug"; do
+          for combo in \
+            "twrp_lxx521-ap2a-eng" \
+            "twrp_lxx521-ap2a-userdebug" \
+            "twrp_lxx521-ap2a-user" \
+            "twrp_lxx521-eng" \
+            "twrp_lxx521-userdebug"; do
             echo ">>> Trying: $combo"
             if lunch "$combo" >/tmp/lunch.log 2>&1; then
               echo "OK: Lunch $combo"
               LUNCHED=1
               break
             else
+              echo "FAIL: $combo"
               tail -3 /tmp/lunch.log | sed "s/^/    /"
             fi
           done
           if [ "$LUNCHED" != "1" ]; then
             echo "ERROR: All lunch attempts failed"
-            cat device/lava/lxx521/AndroidProducts.mk
+            echo "--- Available products ---"
+            ls device/lava/lxx521/*.mk 2>/dev/null
+            echo "--- AndroidProducts.mk ---"
+            cat device/lava/lxx521/AndroidProducts.mk 2>/dev/null
             exit 1
           fi
           mka vendorbootimage -j4 2>&1 | tail -150
