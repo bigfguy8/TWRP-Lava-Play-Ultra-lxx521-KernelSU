@@ -211,8 +211,8 @@ jobs:
             '$(call inherit-product, $(SRC_TARGET_DIR)/product/virtual_ab_ota/launch_with_vendor_ramdisk.mk)' \
             '' \
             '# FUSE' \
-            'PRODUCT_PROPERTY_OVERRIDES += \\' \
-            '    ro.twrp.vendor_boot=true \\' \
+            'PRODUCT_PROPERTY_OVERRIDES += \' \
+            '    ro.twrp.vendor_boot=true \' \
             '    persist.sys.fuse.passthrough.enable=true' \
             '' \
             '# FORCE PRODUCT_NAME at end (inherits may override)' \
@@ -267,6 +267,9 @@ jobs:
           done
           if [ "$LUNCHED" != "1" ]; then
             echo "ERROR: All lunch attempts failed"
+            echo "════ FULL LAST LUNCH LOG ════"
+            cat /tmp/lunch.log 2>/dev/null || echo "(no log)"
+            echo "════ END FULL LOG ════"
             echo "--- AndroidProducts.mk ---"
             cat device/lava/lxx521/AndroidProducts.mk 2>/dev/null
             echo "--- twrp_lxx521.mk (release check) ---"
