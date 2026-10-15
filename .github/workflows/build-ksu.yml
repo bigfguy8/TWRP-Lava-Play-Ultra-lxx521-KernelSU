@@ -38,11 +38,8 @@ jobs:
           KMI="${{ inputs.kmi }}"
           BASE="https://github.com/KernelSU-Next/KernelSU-Next/releases/download/${KSU_VER}"
 
-          echo ">>> magiskboot (from official Magisk APK)"
-          MAGISK_URL=$(curl -s https://api.github.com/repos/topjohnwu/Magisk/releases/latest | grep "browser_download_url" | grep -E "\.apk$" | head -n 1 | cut -d""" -f4)
-          curl -fL --retry 3 -o magisk.apk "$MAGISK_URL"
-          unzip -q magisk.apk "lib/x86_64/libmagiskboot.so"
-          mv lib/x86_64/libmagiskboot.so magiskboot
+          echo ">>> magiskboot (direct standalone)"
+          curl -fL --retry 3 -o magiskboot https://raw.githubusercontent.com/twrpdt/ansg_installer/master/magiskboot
           chmod +x magiskboot
           ./magiskboot 2>&1 | head -15 || true
 
