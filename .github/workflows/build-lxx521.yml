@@ -1,4 +1,4 @@
-name: Build KernelSU-Next init_boot
+name: Build KernelSU-Next for lxx521
 on:
   workflow_dispatch:
     inputs:
