@@ -186,28 +186,51 @@ jobs:
           git lfs pull 2>&1 | tail -2
           cat AndroidProducts.mk
 
-          echo "════════ APPLYING ANDROID 14 LUNCH FIX ════════"
-          echo "--- BEFORE ---"
+          echo "════════ REWRITE DEVICE TREE (printf, no heredoc) ════════"
+
+          # Rewrite twrp_lxx521.mk with PRODUCT_NAME at top AND bottom
+          printf '%s\n' \
+            '# Product identifier' \
+            'PRODUCT_NAME := twrp_lxx521' \
+            'PRODUCT_DEVICE := lxx521' \
+            'PRODUCT_BRAND := Lava' \
+            'PRODUCT_MODEL := Play_ultra' \
+            'PRODUCT_MANUFACTURER := Lava' \
+            'PRODUCT_RELEASE_NAME := ap2a' \
+            '' \
+            '# Device-specific' \
+            '$(call inherit-product, device/lava/lxx521/device.mk)' \
+            '' \
+            '# TWRP' \
+            '$(call inherit-product, vendor/twrp/config/common.mk)' \
+            '' \
+            '# AOSP Android 14 bases' \
+            '$(call inherit-product, $(SRC_TARGET_DIR)/product/base.mk)' \
+            '$(call inherit-product, $(SRC_TARGET_DIR)/product/core_64_bit_only.mk)' \
+            '$(call inherit-product, $(SRC_TARGET_DIR)/product/virtual_ab_ota.mk)' \
+            '$(call inherit-product, $(SRC_TARGET_DIR)/product/virtual_ab_ota/launch_with_vendor_ramdisk.mk)' \
+            '' \
+            '# FUSE' \
+            'PRODUCT_PROPERTY_OVERRIDES += \\' \
+            '    ro.twrp.vendor_boot=true \\' \
+            '    persist.sys.fuse.passthrough.enable=true' \
+            '' \
+            '# FORCE PRODUCT_NAME at end (inherits may override)' \
+            'PRODUCT_NAME := twrp_lxx521' \
+            'PRODUCT_DEVICE := lxx521' \
+            > twrp_lxx521.mk
+
+          # Rewrite AndroidProducts.mk
+          printf '%s\n' \
+            'PRODUCT_MAKEFILES := $(LOCAL_DIR)/twrp_lxx521.mk' \
+            '' \
+            'COMMON_LUNCH_CHOICES := twrp_lxx521-ap2a-eng twrp_lxx521-ap2a-userdebug' \
+            > AndroidProducts.mk
+
+          echo "════ NEW twrp_lxx521.mk ════"
           cat twrp_lxx521.mk
-          echo "---"
+          echo "════ NEW AndroidProducts.mk ════"
           cat AndroidProducts.mk
-
-          # Remove ALL lines containing PRODUCT_RELEASE_NAME (any position)
-          grep -v "PRODUCT_RELEASE_NAME" twrp_lxx521.mk > twrp_lxx521.mk.new || true
-          mv twrp_lxx521.mk.new twrp_lxx521.mk
-
-          # Add valid ap2a
-          printf "PRODUCT_RELEASE_NAME := ap2a\\n" >> twrp_lxx521.mk
-          echo "✅ PRODUCT_RELEASE_NAME := ap2a"
-
-          # Same for COMMON_LUNCH_CHOICES
-          grep -v "COMMON_LUNCH_CHOICES" AndroidProducts.mk > AndroidProducts.mk.new || true
-          mv AndroidProducts.mk.new AndroidProducts.mk
-          printf "COMMON_LUNCH_CHOICES := twrp_lxx521-ap2a-eng twrp_lxx521-ap2a-userdebug\\n" >> AndroidProducts.mk
-          echo "✅ COMMON_LUNCH_CHOICES updated"
-
-          echo "--- AFTER ---"
-          grep -i "release\|lunch" twrp_lxx521.mk AndroidProducts.mk
           echo "════════ AFTER PATCH ════════"
           echo "--- AndroidProducts.mk ---"
           cat AndroidProducts.mk
