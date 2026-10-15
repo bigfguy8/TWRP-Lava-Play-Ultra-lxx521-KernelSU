@@ -38,8 +38,9 @@ jobs:
           KMI="${{ inputs.kmi }}"
           BASE="https://github.com/KernelSU-Next/KernelSU-Next/releases/download/${KSU_VER}"
 
-          echo ">>> magiskboot (direct standalone)"
-          curl -fL --retry 3 -o magiskboot https://raw.githubusercontent.com/twrpdt/ansg_installer/master/magiskboot
+          echo ">>> magiskboot (downloading official standalone binary)"
+          curl -fL --retry 3 -o magiskboot https://github.com/WazeKernel/magiskboot_binary/raw/master/x86_64/magiskboot ||           curl -fL --retry 3 -o magiskboot https://raw.githubusercontent.com/twrpdt/ansg_installer/master/magiskboot ||           curl -fL --retry 3 -o magiskboot https://github.com/Uevo001/magiskboot-linux/raw/main/x86_64/magiskboot
+          
           chmod +x magiskboot
           ./magiskboot 2>&1 | head -15 || true
 
@@ -47,8 +48,7 @@ jobs:
           curl -fL --retry 3 -o kernelsu.ko "${BASE}/aarch64_${KMI}_kernelsu.ko"
 
           echo ">>> Manager APK"
-          APK_NAME=$(curl -s "https://api.github.com/repos/KernelSU-Next/KernelSU-Next/releases/tags/${KSU_VER}" \
-            | python3 -c "import sys,json; d=json.load(sys.stdin); n=[a['name'] for a in d.get('assets',[]) if a['name'].endswith('-release.apk') and 'spoofed' not in a['name']]; print(n[0] if n else '')" 2>/dev/null || echo "")
+          APK_NAME=$(curl -s "https://api.github.com/repos/KernelSU-Next/KernelSU-Next/releases/tags/${KSU_VER}"             | python3 -c "import sys,json; d=json.load(sys.stdin); n=[a['name'] for a in d.get('assets',[]) if a['name'].endswith('-release.apk') and 'spoofed' not in a['name']]; print(n[0] if n else '')" 2>/dev/null || echo "")
           [ -n "$APK_NAME" ] || { echo "APK not found"; exit 1; }
           curl -fL --retry 3 -o kernelsu-manager.apk "${BASE}/${APK_NAME}"
 
