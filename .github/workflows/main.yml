@@ -11,17 +11,63 @@ jobs:
     timeout-minutes: 180
 
     steps:
-      # 1. Free up disk space FIRST
-      - name: Maximize build space
-        uses: easimon/maximize-build-space@master
+      # 1. Free disk space (jlumbroso action)
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
         with:
-          root-reserve-mb: 6144
-          swap-size-mb: 8192
-          remove-dotnet: true
-          remove-android: true
-          remove-haskell: true
-          remove-codeql: true
-          remove-docker-images: true
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
+      # 2. Extra cleanup + /mnt build space setup (70 GB scratch)
+      - name: Setup extra build space
+        run: |
+          set +e
+          echo "=== BEFORE ==="
+          df -h / /mnt 2>/dev/null
+
+          # Extra cleanups
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo rm -rf /usr/local/share/boost
+          sudo rm -rf /usr/local/lib/node_modules
+          sudo rm -rf /usr/share/swift
+          sudo rm -rf /opt/az
+          sudo rm -rf /usr/local/.ghcup
+          sudo rm -rf /opt/pipx
+          sudo rm -rf /usr/share/miniconda
+          sudo rm -rf /usr/local/graalvm
+          sudo rm -rf /usr/local/share/powershell
+          sudo rm -rf /usr/local/share/chromium
+          sudo rm -rf /usr/share/mono
+          sudo rm -rf /opt/microsoft
+          sudo rm -rf /usr/share/java
+          sudo rm -rf /usr/local/sdkman
+
+          # Setup /mnt/build (70 GB scratch)
+          sudo mkdir -p /mnt/build
+          sudo chown -R $USER:$USER /mnt/build
+          echo "/mnt/build ready"
+
+          # Cleanup apt cache
+          sudo apt-get clean
+          sudo rm -rf /var/lib/apt/lists/*
+          sudo rm -rf /var/cache/apt/archives/*
+
+          echo ""
+          echo "=== AFTER ==="
+          df -h / /mnt 2>/dev/null
+          sudo swapoff -a
+          sudo rm -f /swapfile
+
+          echo "=== AFTER ==="
+          df -h /
 
       # 2. Checkout AFTER maximize (so files are not wiped)
       - name: Checkout device tree
@@ -50,8 +96,8 @@ jobs:
       # 4. Sync TWRP source
       - name: Sync TWRP source
         run: |
-          mkdir -p workspace
-          cd workspace
+          mkdir -p /mnt/build/workspace
+          cd /mnt/build/workspace
           git config --global user.name "GitHub Actions"
           git config --global user.email "actions@github.com"
           git config --global color.ui false
@@ -68,35 +114,40 @@ jobs:
           echo "=== Files in root ==="
           ls -la
 
-          mkdir -p workspace/device/lava/lxx521
+          mkdir -p /mnt/build/workspace/device/lava/lxx521
 
           # Copy everything needed
           cp -a Android.mk AndroidProducts.mk BoardConfig.mk device.mk \
                 system.prop twrp_lxx521.mk vendorsetup.sh \
-                workspace/device/lava/lxx521/ 2>/dev/null || true
+                /mnt/build//mnt/build/workspace/device/lava/lxx521/ 2>/dev/null || true
 
           for d in bootctrl mtk_plpath_utils prebuilt recovery; do
-            [ -d "$d" ] && cp -a "$d" workspace/device/lava/lxx521/
+            [ -d "$d" ] && cp -a "$d" /mnt/build/workspace/device/lava/lxx521/
           done
 
           echo "=== Device tree after copy ==="
-          ls -la workspace/device/lava/lxx521/
+          ls -la /mnt/build/workspace/device/lava/lxx521/
           find workspace/device/lava/lxx521 -type f | head -20
 
           # Fail early if critical files are missing
-          if [ ! -f workspace/device/lava/lxx521/twrp_lxx521.mk ]; then
+          if [ ! -f /mnt/build/workspace/device/lava/lxx521/twrp_lxx521.mk ]; then
             echo "ERROR: twrp_lxx521.mk was not copied!"
             exit 1
           fi
 
       # 6. Build
       - name: Build TWRP
-        working-directory: workspace
+        working-directory: /mnt/build/workspace
         run: |
           source build/envsetup.sh
 
           # Try the formats declared in your AndroidProducts.mk
           lunch twrp_lxx521-ap2a-eng || lunch twrp_lxx521-ap2a-userdebug
+
+          echo ""
+          echo "=== DISK SPACE BEFORE BUILD ==="
+          df -h / /mnt 2>/dev/null
+          echo ""
 
           export ALLOW_MISSING_DEPENDENCIES=true
           export LC_ALL=C
@@ -109,7 +160,7 @@ jobs:
 
       # 7. Collect images
       - name: Collect images
-        working-directory: workspace
+        working-directory: /mnt/build/workspace
         run: |
           mkdir -p output
           find out/ -type f -name "*.img" -exec cp -v {} output/ \;
@@ -127,7 +178,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: TWRP-LXX521-${{ github.run_number }}
-          path: workspace/output/*.img
+          path: /mnt/build/workspace/output/*.img
           if-no-files-found: error
           retention-days: 14
 
@@ -136,5 +187,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: debug-out-${{ github.run_number }}
-          path: workspace/out/
+          path: /mnt/build/workspace/out/
           retention-days: 3
+          if-no-files-found: ignore
