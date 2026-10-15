@@ -24,6 +24,7 @@ jobs:
 
       - name: Verify stock
         run: |
+          export TARGET_RELEASE=ap3a
           ls -lh init_boot_stock.img
           C=$(strings -a init_boot_stock.img 2>/dev/null | grep -cE "kernelsu|ksud|u:r:ksu" || echo 0)
           echo "KSU refs in stock: $C"
@@ -31,6 +32,7 @@ jobs:
 
       - name: Download magiskboot + KSU assets
         run: |
+          export TARGET_RELEASE=ap3a
           set -e
           KSU_VER="${{ inputs.ksu_version }}"
           KMI="${{ inputs.kmi }}"
@@ -54,6 +56,7 @@ jobs:
 
       - name: Unpack init_boot.img
         run: |
+          export TARGET_RELEASE=ap3a
           set -e
           cp init_boot_stock.img boot.img
           ./magiskboot unpack boot.img
@@ -64,6 +67,7 @@ jobs:
 
       - name: Inspect ramdisk
         run: |
+          export TARGET_RELEASE=ap3a
           set +e
           echo "=== cpio test ==="
           ./magiskboot cpio ramdisk.cpio test 2>&1 | head -40
@@ -77,6 +81,7 @@ jobs:
 
       - name: Patch ramdisk with KernelSU
         run: |
+          export TARGET_RELEASE=ap3a
           set -e
 
           # Extract init.rc BEFORE modifications
@@ -114,6 +119,7 @@ jobs:
 
       - name: Repack
         run: |
+          export TARGET_RELEASE=ap3a
           set -e
           mkdir -p output
           ./magiskboot repack boot.img output/init_boot-patched.img
@@ -122,6 +128,7 @@ jobs:
 
       - name: Verify output
         run: |
+          export TARGET_RELEASE=ap3a
           set -e
           P="output/init_boot-patched.img"
           [ -f "$P" ] || { echo "No output file"; exit 1; }
@@ -144,6 +151,7 @@ jobs:
 
       - name: Prepare artifact
         run: |
+          export TARGET_RELEASE=ap3a
           cp init_boot_stock.img output/
           cp kernelsu.ko "output/kernelsu-lkm-${{ inputs.kmi }}.ko"
           cp kernelsu-manager.apk output/
